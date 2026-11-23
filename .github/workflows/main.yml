@@ -3,7 +3,8 @@ name: ZEUVORYX Antivirus - Windows Build
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -11,7 +12,9 @@ permissions:
 
 jobs:
   build-windows:
+    name: Test and Build Windows
     runs-on: windows-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -21,28 +24,103 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.x'
+          cache: false
 
       - name: Inspect project structure
         shell: pwsh
         run: |
+          Write-Host "ZEUVORYX - Project Inspection"
           Get-ChildItem -Recurse -File |
             Select-Object -ExpandProperty FullName
 
-      - name: Build ZEUVORYX executable
+      - name: Validate Go module
         shell: pwsh
         run: |
-          if (-not (Test-Path "go.mod")) {
-            throw "Arquivo go.mod nao encontrado na raiz."
+          if (!(Test-Path "go.mod")) {
+            throw "Missing go.mod in repository root."
           }
 
-          New-Item -ItemType Directory -Force -Path dist
+          go version
           go mod download
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Go dependency download failed."
+          }
+
+      - name: Run Go tests
+        shell: pwsh
+        run: |
           go test ./...
-          go build -v -o dist/ZEUVORYX.exe .
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Go tests failed."
+          }
+
+      - name: Find executable entry point
+        id: entry
+        shell: pwsh
+        run: |
+          $packages = @(go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... | Where-Object { $_.Trim() -ne "" })
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to inspect Go packages."
+          }
+
+          if ($packages.Count -eq 0) {
+            throw "No package main found. A Windows executable requires a Go main package."
+          }
+
+          if ($packages.Count -gt 1) {
+            throw "Multiple main packages found. Explicit entry point required: $($packages -join ', ')"
+          }
+
+          $entry = $packages[0].Trim()
+          Write-Host "Executable package: $entry"
+          "package=$entry" >> $env:GITHUB_OUTPUT
+
+      - name: Build ZEUVORYX Windows EXE
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          go build -trimpath -buildvcs=false -ldflags="-s -w" -o dist/ZEUVORYX-Antivirus.exe "${{ steps.entry.outputs.package }}"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows compilation failed."
+          }
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $exe = "dist/ZEUVORYX-Antivirus.exe"
+
+          if (!(Test-Path $exe)) {
+            throw "Executable was not generated."
+          }
+
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+
+          if ($bytes.Length -lt 1024) {
+            throw "Executable is unexpectedly small."
+          }
+
+          if ($bytes[0] -ne 77 -or $bytes[1] -ne 90) {
+            throw "Invalid Windows executable header."
+          }
+
+          Write-Host "Windows EXE verified."
+          Get-Item $exe |
+            Select-Object Name, Length, FullName
 
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4
         with:
-          name: ZEUVORYX-Windows
-          path: dist/ZEUVORYX.exe
+          name: ZEUVORYX-Antivirus-Windows
+          path: dist/ZEUVORYX-Antivirus.exe
           if-no-files-found: error
+          retention-days: 30
+
