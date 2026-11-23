@@ -1,0 +1,48 @@
+
+name: ZEUVORYX Antivirus - Windows Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+
+      - name: Inspect project structure
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse -File |
+            Select-Object -ExpandProperty FullName
+
+      - name: Build ZEUVORYX executable
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "go.mod")) {
+            throw "Arquivo go.mod nao encontrado na raiz."
+          }
+
+          New-Item -ItemType Directory -Force -Path dist
+          go mod download
+          go test ./...
+          go build -v -o dist/ZEUVORYX.exe .
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZEUVORYX-Windows
+          path: dist/ZEUVORYX.exe
+          if-no-files-found: error
